@@ -69,6 +69,7 @@ if __name__ == '__main__':
     BATCH_SIZE = 64
     EPOCHS     = 30
     MAX_LR     = 1e-3
+    ETA_MIN    = 1e-6
     save_path  = 'best_model.pth'
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -76,11 +77,14 @@ if __name__ == '__main__':
 
     print("Loading datasets...")
     train_set    = PetDataset('./data', 'trainval', transform=get_transforms(IMAGE_SIZE))
-    train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+    train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True,
+                              num_workers=4, pin_memory=True)
 
     model     = PetNet(num_classes=37).to(device)
     criterion = nn.CrossEntropyLoss()
-    optimiser = torch.optim.Adam(model.parameters(), lr=MAX_LR)
+    optimiser = torch.optim.AdamW(model.parameters(), lr=MAX_LR, weight_decay=1e-2)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimiser, T_max=EPOCHS * len(train_loader), eta_min=ETA_MIN)
 
     print(f"\n{'Epoch':>5} {'Train Loss':>11} {'Train Acc':>10}")
     print("-" * 32)
@@ -96,7 +100,9 @@ if __name__ == '__main__':
             loss   = criterion(logits, labels)
             correct += (logits.argmax(1) == labels).sum().item()
             loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimiser.step()
+            scheduler.step()
             total_loss += loss.item()
             total      += labels.size(0)
 
