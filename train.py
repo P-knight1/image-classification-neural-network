@@ -1,23 +1,30 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as T
 from torch.utils.data import DataLoader, Dataset
+from PIL import Image
 
 
 class PetDataset(Dataset):
     def __init__(self, root, split, transform=None):
         self.base = torchvision.datasets.OxfordIIITPet(
             root=root, split=split, download=True,
-            target_types=['category'])
+            target_types=['category', 'segmentation'])
         self.transform = transform
 
     def __len__(self):
         return len(self.base)
 
     def __getitem__(self, idx):
-        img, label = self.base[idx]
+        img, (label, trimap) = self.base[idx]
+        img_arr    = np.array(img)
+        trimap_arr = np.array(trimap)
+        if img_arr.shape[:2] == trimap_arr.shape[:2]:
+            img_arr[trimap_arr == 2] = [124, 116, 104]
+        img = Image.fromarray(img_arr)
         if self.transform:
             img = self.transform(img)
         return img, label
