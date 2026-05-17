@@ -47,6 +47,16 @@ def get_eval_transforms(image_size):
     ])
 
 
+def mixup(x, y, alpha=0.4):
+    lam = float(np.random.beta(alpha, alpha))
+    idx = torch.randperm(x.size(0), device=x.device)
+    return lam * x + (1 - lam) * x[idx], y, y[idx], lam
+
+
+def mixed_loss(criterion, logits, ya, yb, lam):
+    return lam * criterion(logits, ya) + (1 - lam) * criterion(logits, yb)
+
+
 class ConvBlock(nn.Module):
     def __init__(self, in_ch, out_ch, stride=1):
         super().__init__()
@@ -157,10 +167,20 @@ if __name__ == '__main__':
 
         for images, labels in train_loader:
             images, labels = images.to(device), labels.to(device)
-            optimiser.zero_grad()
-            logits = model(images)
-            loss   = criterion(logits, labels)
-            correct += (logits.argmax(1) == labels).sum().item()
+
+            if np.random.rand() < 0.50:
+                images, ya, yb, lam = mixup(images, labels)
+                optimiser.zero_grad()
+                logits = model(images)
+                loss   = mixed_loss(criterion, logits, ya, yb, lam)
+                dominant = ya if lam >= 0.5 else yb
+                correct += (logits.argmax(1) == dominant).sum().item()
+            else:
+                optimiser.zero_grad()
+                logits = model(images)
+                loss   = criterion(logits, labels)
+                correct += (logits.argmax(1) == labels).sum().item()
+
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimiser.step()
