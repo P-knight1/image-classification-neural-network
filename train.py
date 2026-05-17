@@ -32,7 +32,7 @@ class PetDataset(Dataset):
 
 def get_train_transforms(image_size):
     return T.Compose([
-        T.Resize((image_size, image_size)),
+        T.RandomResizedCrop(image_size, scale=(0.7, 1.0)),
         T.RandomHorizontalFlip(),
         T.ToTensor(),
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
@@ -141,7 +141,7 @@ if __name__ == '__main__':
                               num_workers=4, pin_memory=True)
 
     model     = PetNet(num_classes=37).to(device)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
     optimiser = torch.optim.AdamW(model.parameters(), lr=MAX_LR, weight_decay=1e-2)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimiser, T_max=EPOCHS * len(train_loader), eta_min=ETA_MIN)
