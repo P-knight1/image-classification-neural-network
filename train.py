@@ -57,6 +57,7 @@ def mixed_loss(criterion, logits, ya, yb, lam):
     return lam * criterion(logits, ya) + (1 - lam) * criterion(logits, yb)
 
 
+# Second conv uses dilation=2 to capture a wider receptive field
 class ConvBlock(nn.Module):
     def __init__(self, in_ch, out_ch, stride=1):
         super().__init__()
@@ -64,7 +65,7 @@ class ConvBlock(nn.Module):
             nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False),
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False),
+            nn.Conv2d(out_ch, out_ch, 3, padding=2, dilation=2, bias=False),
             nn.BatchNorm2d(out_ch),
         )
         self.skip = nn.Sequential()
