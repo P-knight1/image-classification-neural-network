@@ -57,7 +57,6 @@ def mixed_loss(criterion, logits, ya, yb, lam):
     return lam * criterion(logits, ya) + (1 - lam) * criterion(logits, yb)
 
 
-# Second conv uses dilation=2 to capture a wider receptive field
 class ConvBlock(nn.Module):
     def __init__(self, in_ch, out_ch, stride=1):
         super().__init__()
@@ -90,9 +89,9 @@ class PetNet(nn.Module):
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
         )
 
-        self.stage1 = ConvBlock(32,  64)
-        self.stage2 = ConvBlock(64,  128, stride=2)
-        self.stage3 = ConvBlock(128, 256, stride=2)
+        self.stage1 = nn.Sequential(ConvBlock(32,  64),  ConvBlock(64,  64))
+        self.stage2 = nn.Sequential(ConvBlock(64,  128, stride=2), ConvBlock(128, 128))
+        self.stage3 = nn.Sequential(ConvBlock(128, 256, stride=2), ConvBlock(256, 256))
         self.stage4 = ConvBlock(256, 512, stride=2)
 
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
@@ -138,6 +137,9 @@ if __name__ == '__main__':
     MAX_LR     = 1e-3
     ETA_MIN    = 1e-6
     save_path  = 'best_model.pth'
+
+    torch.manual_seed(42)
+    np.random.seed(42)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
