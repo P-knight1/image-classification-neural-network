@@ -53,19 +53,21 @@ def mixup(x, y, alpha=0.4):
     return lam * x + (1 - lam) * x[idx], y, y[idx], lam
 
 
+
 def mixed_loss(criterion, logits, ya, yb, lam):
     return lam * criterion(logits, ya) + (1 - lam) * criterion(logits, yb)
 
-
+# Skip connection design inspired by He et al. (2015), "Deep Residual Learning for Image Recognition"
+# https://arxiv.org/abs/1512.03385
 class ConvBlock(nn.Module):
     def __init__(self, in_ch, out_ch, stride=1):
         super().__init__()
         self.conv_path = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, 3, padding=2, dilation=2, bias=False),
-            nn.BatchNorm2d(out_ch),
+            nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False),  # first conv
+            nn.BatchNorm2d(out_ch),                                               # normalise
+            nn.ReLU(inplace=True),                                                # activation
+            nn.Conv2d(out_ch, out_ch, 3, padding=2, dilation=2, bias=False),     # dilated conv
+            nn.BatchNorm2d(out_ch),                                               # normalise
         )
         self.skip = nn.Sequential()
         if stride != 1 or in_ch != out_ch:
@@ -83,21 +85,22 @@ class PetNet(nn.Module):
         super().__init__()
 
         self.stem = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),  #224×224 -> 112×112
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),                  #112×112 -> 56×56
         )
 
-        self.stage1 = nn.Sequential(ConvBlock(32,  64),  ConvBlock(64,  64))
-        self.stage2 = nn.Sequential(ConvBlock(64,  128, stride=2), ConvBlock(128, 128))
-        self.stage3 = nn.Sequential(ConvBlock(128, 256, stride=2), ConvBlock(256, 256))
-        self.stage4 = ConvBlock(256, 512, stride=2)
+        self.stage1 = nn.Sequential(ConvBlock(32,  64),  ConvBlock(64,  64))            #56×56×64
+        self.stage2 = nn.Sequential(ConvBlock(64,  128, stride=2), ConvBlock(128, 128)) #28×28×128
+        self.stage3 = nn.Sequential(ConvBlock(128, 256, stride=2), ConvBlock(256, 256)) #14×14×256
+        self.stage4 = ConvBlock(256, 512, stride=2)                                     #7×7×512
 
-        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.classifier  = nn.Sequential(
-            nn.Dropout(0.5),
-            nn.Linear(512, num_classes),
+        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))  #7×7×512 -> 512
+
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(512, num_classes),  #512 -> 37 class scores
         )
 
         for m in self.modules():
@@ -116,6 +119,37 @@ class PetNet(nn.Module):
         x = self.global_pool(x)
         x = x.flatten(1)
         return self.classifier(x)
+
+
+def train_epoch(model, loader, criterion, optimiser, scheduler, device):
+    model.train()
+    total_loss, correct, total = 0.0, 0, 0
+
+    for images, labels in loader:
+        images, labels = images.to(device), labels.to(device)
+
+        if np.random.rand() < 0.50:
+            images, ya, yb, lam = mixup(images, labels)
+            optimiser.zero_grad()
+            logits = model(images)
+            loss   = mixed_loss(criterion, logits, ya, yb, lam)
+            dominant = ya if lam >= 0.5 else yb
+            correct += (logits.argmax(1) == dominant).sum().item()
+        else:
+            optimiser.zero_grad()
+            logits = model(images)
+            loss   = criterion(logits, labels)
+            correct += (logits.argmax(1) == labels).sum().item()
+
+        loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimiser.step()
+        scheduler.step()
+
+        total_loss += loss.item()
+        total      += labels.size(0)
+
+    return total_loss / len(loader), 100.0 * correct / total
 
 
 def eval_epoch(model, loader, device):
@@ -142,15 +176,10 @@ if __name__ == '__main__':
     np.random.seed(42)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Device: {device}")
 
-    print("Loading datasets...")
-    train_set = PetDataset('./data', 'trainval', transform=get_train_transforms(IMAGE_SIZE))
-    test_set  = PetDataset('./data', 'test',     transform=get_eval_transforms(IMAGE_SIZE))
-
+    print("\nLoading datasets...")
+    train_set    = PetDataset('./data', 'trainval', transform=get_train_transforms(IMAGE_SIZE))
     train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True,
-                              num_workers=4, pin_memory=True)
-    test_loader  = DataLoader(test_set,  batch_size=BATCH_SIZE, shuffle=False,
                               num_workers=4, pin_memory=True)
 
     model     = PetNet(num_classes=37).to(device)
@@ -158,47 +187,16 @@ if __name__ == '__main__':
     optimiser = torch.optim.AdamW(model.parameters(), lr=MAX_LR, weight_decay=1e-2)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimiser, T_max=EPOCHS * len(train_loader), eta_min=ETA_MIN)
+    
+    print(f"Device:{device}")
 
-    best_test_acc = 0.0
-
-    print(f"\n{'Epoch':>5} {'Train Loss':>11} {'Train Acc':>10} {'Test Acc':>9}")
-    print("-" * 42)
+    print(f"\n{'Epoch':>5} {'Train Loss':>11} {'Train Acc':>10}")
+    print("-" * 32)
 
     for epoch in range(1, EPOCHS + 1):
-        model.train()
-        total_loss, correct, total = 0.0, 0, 0
+        train_loss, train_acc = train_epoch(
+            model, train_loader, criterion, optimiser, scheduler, device)
+        print(f"{epoch:>5} {train_loss:>11.4f} {train_acc:>9.1f}%")
 
-        for images, labels in train_loader:
-            images, labels = images.to(device), labels.to(device)
-
-            if np.random.rand() < 0.50:
-                images, ya, yb, lam = mixup(images, labels)
-                optimiser.zero_grad()
-                logits = model(images)
-                loss   = mixed_loss(criterion, logits, ya, yb, lam)
-                dominant = ya if lam >= 0.5 else yb
-                correct += (logits.argmax(1) == dominant).sum().item()
-            else:
-                optimiser.zero_grad()
-                logits = model(images)
-                loss   = criterion(logits, labels)
-                correct += (logits.argmax(1) == labels).sum().item()
-
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimiser.step()
-            scheduler.step()
-            total_loss += loss.item()
-            total      += labels.size(0)
-
-        if epoch % 5 == 0 or epoch == EPOCHS:
-            test_acc = eval_epoch(model, test_loader, device)
-            print(f"{epoch:>5} {total_loss/len(train_loader):>11.4f} {100.*correct/total:>9.1f}% {test_acc:>8.1f}%")
-            if test_acc > best_test_acc:
-                best_test_acc = test_acc
-                torch.save(model.state_dict(), save_path)
-        else:
-            print(f"{epoch:>5} {total_loss/len(train_loader):>11.4f} {100.*correct/total:>9.1f}%")
-
-    print(f"\nBest test accuracy: {best_test_acc:.1f}%")
-    print(f"Model saved to: {save_path}")
+    torch.save(model.state_dict(), save_path)
+    print(f"\nTraining complete. Model saved to: {save_path}")
